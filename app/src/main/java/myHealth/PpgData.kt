@@ -1,4 +1,4 @@
-package com.example.bluetoothexample.presentation
+package myHealth
 
 /**
  * Raw PPG 센서 데이터를 담는 데이터 클래스.
@@ -13,8 +13,5 @@ package com.example.bluetoothexample.presentation
 data class PpgData(
     val timestampNs: Long,
     val green: Int = 0,     // 실제 데이터 타입이 Float 등일 수 있으므로 확인 필요
-    val ir: Int = 0,        // 실제 데이터 타입이 Float 등일 수 있으므로 확인 필요
-    val red: Int = 0,       // 실제 데이터 타입이 Float 등일 수 있으므로 확인 필요
     val greenStatus: Int = Status.STATUS_NONE,
-    val redStatus: Int = Status.STATUS_NONE,
 )

@@ -1,4 +1,4 @@
-package com.example.bluetoothexample.presentation
+package myHealth
 
 /**
  * 심박수 센서 상태를 나타내는 상수들을 정의하는 객체.

@@ -1,6 +1,6 @@
-package com.example.bluetoothexample.presentation
+package com.example.bluetoothexample.presentation // 실제 패키지 이름으로 변경하세요
 
-import android.Manifest
+import android.Manifest // Manifest 임포트 추가
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -16,83 +16,108 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color // Compose Color 사용
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import androidx.wear.compose.material.Button
-import androidx.wear.compose.material.CircularProgressIndicator
-import androidx.wear.compose.material.MaterialTheme
-import androidx.wear.compose.material.Scaffold
-import androidx.wear.compose.material.Text
+import androidx.wear.compose.material.*
+import com.example.bluetoothexample.R
+import com.google.gson.Gson // JSON 변환 예시용 (build.gradle에 추가 필요: implementation 'com.google.code.gson:gson:2.10.1')
+import com.samsung.android.service.health.tracking.HealthTrackerException // 예외 처리용
+
+import myHealth.ConnectionManager
+import myHealth.ConnectionObserver
+import myHealth.Status
+import myHealth.PpgData
+import myHealth.PpgListener
+import myHealth.TrackerDataNotifier // 가정
+import myHealth.TrackerDataObserver
+import myHealth.HeartRateData
+import myHealth.HeartRateListener
+// import com.samsung.health.multisensortracking.R // R 클래스 임포트 (실제 프로젝트의 R 사용)
+
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.OutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import java.lang.IllegalArgumentException // IllegalArgumentException 임포트
 
-// 데이터 클래스 제거
-// data class DiscoveredDeviceInfo(...)
-
+/**
+ * Wear OS 액티비티:
+ * 1. Samsung Health Tracking Service에 연결 (ConnectionManager 사용 가정).
+ * 2. HR 및 PPG 센서 리스너 등록 및 데이터 수신 (HeartRateListener, PpgListener 사용 가정).
+ * 3. 지정된 PC와 블루투스(SPP) 연결 관리.
+ * 4. 수신된 센서 데이터를 UI에 표시.
+ * 5. 수신된 센서 데이터를 JSON으로 변환하여 블루투스로 PC에 전송.
+ */
 class MainActivity : ComponentActivity() {
 
-    private val TAG = "WearBluetoothDirect"
-    private val MY_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // SPP UUID
-    // [추가] 연결할 PC의 MAC 주소 상수
-    private val TARGET_PC_ADDRESS = "8C:88:4B:26:8A:36"
+    // --- 상수 정의 ---
+    private companion object {
+        const val TAG = "WearSensorBt"
+        val MY_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+        const val TARGET_PC_ADDRESS = "8C:88:4B:26:8A:36"
+        val timestampFormatter = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+    }
 
     // --- Bluetooth 관련 변수 ---
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private var outputStream: OutputStream? = null
-    private var connectionJob: Job? = null
+    private var bluetoothConnectionJob: Job? = null
 
-    // --- UI 상태 관리 ---
-    private var connectionStatus by mutableStateOf("대기 중")
-    private var isConnecting by mutableStateOf(false)
-    // private var isScanning by mutableStateOf(false) // 제거
-    // private var discoveredDevices = mutableStateListOf<DiscoveredDeviceInfo>() // 제거
+    // --- Health SDK 관련 변수 ---
+    private var connectionManager: ConnectionManager? = null
+    private var heartRateListener: HeartRateListener? = null
+    private var ppgListener: PpgListener? = null
+    private var healthServiceConnected by mutableStateOf(false)
 
-    // --- BroadcastReceiver 관련 변수 제거 ---
-    // private var isReceiverRegistered = false
+    // --- UI 상태 관리 변수 ---
+    private var btConnectionStatus by mutableStateOf("대기 중")
+    private var isConnectingBluetooth by mutableStateOf(false)
+    private var latestHrData by mutableStateOf<HeartRateData?>(null)
+    private var latestPpgData by mutableStateOf<PpgData?>(null)
+    private var allPermissionsGranted by mutableStateOf(false)
+    // --- New State Variable ---
+    private var isTrackingSensors by mutableStateOf(false) // 센서 트래킹 활성 상태
 
-    // --- 권한 요청 런처 ---
-    private val requestMultiplePermissions =
+    private val gson = Gson()
+
+    private val requestMultiplePermissionsLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            var allGranted = true
-            permissions.entries.forEach {
-                Log.d(TAG, "Permission ${it.key} granted: ${it.value}")
-                if (!it.value) { allGranted = false; Log.w(TAG, "Permission denied: ${it.key}") }
-            }
+            val allGranted = getRequiredPermissions().all { permissions.getOrDefault(it, false) }
             if (allGranted) {
-                Log.d(TAG, "Required permissions granted.")
-                checkBluetoothEnabled()
+                Log.d(TAG, "All required permissions granted.")
+                allPermissionsGranted = true
+                initializeAfterPermissions()
             } else {
                 Log.e(TAG, "Required permissions were denied.")
+                allPermissionsGranted = false
                 updateStatus("권한 필요")
                 Toast.makeText(this, "앱 실행에 필요한 권한이 거부되었습니다.", Toast.LENGTH_LONG).show()
+                // finish()
             }
         }
 
-    // --- 블루투스 활성화 요청 런처 ---
-    private val requestEnableBluetooth =
+    private val requestEnableBluetoothLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
                 Log.d(TAG, "Bluetooth enabled by user.")
@@ -104,8 +129,76 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    // --- BroadcastReceiver 제거 ---
-    // private val bluetoothDiscoveryReceiver = ...
+    private val healthConnectionObserver = object : ConnectionObserver {
+        override fun onConnectionResult(stringResourceId: Int) {
+            val isConnected = (stringResourceId == R.string.ConnectedToHs) // 실제 리소스 ID 사용
+            healthServiceConnected = isConnected
+            if (isConnected) {
+                Log.i(TAG, "Successfully connected to Health Tracking Service.")
+                runOnUiThread { Toast.makeText(applicationContext, "헬스 서비스 연결 성공", Toast.LENGTH_SHORT).show() }
+                // 리스너 초기화 (이제 여기서 트래킹 시작 안함)
+                initializeListenersAndTrackers()
+                TrackerDataNotifier.addObserver(sensorDataObserver)
+                updateStatus("헬스 서비스 연결됨") // 상태 업데이트
+            } else {
+                Log.w(TAG, "Failed to connect to Health Tracking Service.")
+                runOnUiThread { Toast.makeText(applicationContext, "헬스 서비스 연결 실패", Toast.LENGTH_SHORT).show() }
+                updateStatus("헬스 서비스 연결 실패")
+                // 연결 실패 시 센서 트래킹 상태도 비활성화
+                isTrackingSensors = false
+            }
+        }
+
+        override fun onError(e: Throwable?) {
+            runOnUiThread {
+                Log.e(TAG, "Health Tracking Service connection error: ${e?.message}", e)
+                healthServiceConnected = false
+                isTrackingSensors = false // 오류 발생 시 센서 트래킹 중지 상태로
+                updateStatus("헬스 서비스 오류")
+
+                if (e is HealthTrackerException) {
+                    if (e.hasResolution()) {
+                        e.resolve(this@MainActivity)
+                    } else {
+                        val errorMsg = when (e.errorCode) { /* ... */ else -> "헬스 서비스 오류 발생" }
+                        Toast.makeText(applicationContext, errorMsg, Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(applicationContext, "초기화 중 오류 발생: ${e?.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private val sensorDataObserver = object : TrackerDataObserver {
+        override fun onHeartRateTrackerDataChanged(hrData: HeartRateData) {
+            // 트래킹 중일 때만 데이터 처리
+            if (!isTrackingSensors) return
+            latestHrData = hrData
+            Log.d(TAG, "HR data received: $hrData")
+            val jsonData = convertToJson(hrData)
+            sendDataViaBluetooth(jsonData)
+        }
+
+        override fun onPpgDataChanged(ppgData: PpgData) {
+            // 트래킹 중일 때만 데이터 처리
+            if (!isTrackingSensors) return
+            latestPpgData = ppgData
+            Log.d(TAG, "PPG data received: $ppgData")
+            val jsonData = convertToJson(ppgData)
+            sendDataViaBluetooth(jsonData)
+        }
+
+        override fun onError(errorResourceId: Int) {
+            Log.e(TAG, "Sensor error occurred. Resource ID: $errorResourceId")
+            runOnUiThread {
+                Toast.makeText(applicationContext, "센서 오류 발생 (코드: $errorResourceId)", Toast.LENGTH_LONG).show()
+            }
+            // 센서 오류 발생 시 트래킹 중지 및 상태 업데이트
+            stopSensorTracking() // 내부적으로 isTrackingSensors = false 설정됨
+            updateStatus("센서 오류 발생")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -119,411 +212,661 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            WearApp()
+            WearApp(
+                btStatus = btConnectionStatus,
+                isConnecting = isConnectingBluetooth,
+                isConnected = bluetoothSocket?.isConnected == true,
+                hrData = latestHrData,
+                ppgData = latestPpgData,
+                onConnectClick = { connectToTargetPC() },
+                onDisconnectClick = { disconnectBluetooth() },
+                // --- Pass new state and callbacks ---
+                isTracking = isTrackingSensors,
+                onStartTrackingClick = { startSensorTracking() },
+                onStopTrackingClick = { stopSensorTracking() },
+                healthServiceConnected = healthServiceConnected // 헬스 서비스 연결 상태 전달
+            )
         }
 
         checkAndRequestPermissions()
     }
 
-    // --- UI 상태 업데이트 편의 함수 ---
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "onDestroy called. Cleaning up resources.")
+        // 리스너 중지 (앱 종료 시 확실히 중지)
+        stopSensorTracking() // 상태 업데이트 및 리스너 stopTracker() 호출
+        TrackerDataNotifier.removeObserver(sensorDataObserver)
+        connectionManager?.disconnect()
+        disconnectBluetooth()
+    }
+
     private fun updateStatus(status: String) {
         lifecycleScope.launch(Dispatchers.Main) {
-            connectionStatus = status
+            btConnectionStatus = status
         }
     }
 
-    // --- Compose UI 부분 (단순화) ---
+    // --- Jetpack Compose UI 정의 (수정됨) ---
     @Composable
-    fun WearApp() {
-        MaterialTheme {
+    fun WearApp(
+        btStatus: String,
+        isConnecting: Boolean,
+        isConnected: Boolean,
+        hrData: HeartRateData?,
+        ppgData: PpgData?,
+        onConnectClick: () -> Unit,
+        onDisconnectClick: () -> Unit,
+        // --- New parameters ---
+        isTracking: Boolean,
+        onStartTrackingClick: () -> Unit,
+        onStopTrackingClick: () -> Unit,
+        healthServiceConnected: Boolean // 헬스 서비스 상태 받기
+    ) {
+        val blackBackgroundColors = MaterialTheme.colors.copy(
+            background = Color.Black, onBackground = Color.White,
+            surface = Color.Black, onSurface = Color.White,
+            primary = Color(0xFFBB86FC), onPrimary = Color.Black
+        )
+        MaterialTheme (colors = blackBackgroundColors){
             Scaffold(
-                // vignette = { Vignette(vignettePosition = VignettePosition.TopAndBottom) } // 필요 시 비네팅 추가
+                timeText = { TimeText(modifier = Modifier.padding(top = 5.dp)) }
             ) {
-                Column( // ScalingLazyColumn 대신 Column 사용 (아이템 수가 적으므로)
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(16.dp), // 전체 패딩
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center // 수직 중앙 정렬
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // 1. 상태 텍스트
+                    // 1. 블루투스 상태 및 버튼
                     Text(
-                        text = connectionStatus,
+                        text = "BT: $btStatus",
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(bottom = 16.dp), // 버튼과의 간격
-                        style = MaterialTheme.typography.title3
+                        modifier = Modifier.padding(bottom = 8.dp),
+                        style = MaterialTheme.typography.title3,
+                        color = if (isConnected) Color(0xFF4CAF50) else LocalContentColor.current
                     )
-
-                    // 2. 연결/해제 버튼 영역
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
                     ) {
-                        // 연결 버튼
-                        Button(
-                            onClick = { connectToTargetPC() },
-                            // 연결 중이거나 이미 연결된 상태면 비활성화
-                            enabled = !isConnecting && bluetoothSocket?.isConnected != true,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("PC 연결", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Button(onClick = onConnectClick, enabled = !isConnecting && !isConnected, modifier = Modifier.weight(1f)) {
+                            Text("PC 연결", maxLines = 1)
                         }
-                        // 연결 끊기 버튼
-                        Button(
-                            onClick = { disconnect() },
-                            // 연결 중이거나 연결된 상태일 때 활성화
-                            enabled = isConnecting || bluetoothSocket?.isConnected == true,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("연결 끊기", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Button(onClick = onDisconnectClick, enabled = isConnecting || isConnected, modifier = Modifier.weight(1f)) {
+                            Text("연결 끊기", maxLines = 1)
                         }
                     }
-                    // 검색 관련 UI 제거
-                } // End of Column
-            } // End of Scaffold
-        } // End of MaterialTheme
+                    if (isConnecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(bottom=8.dp).size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+
+                    // --- 센서 트래킹 상태 및 버튼 추가 ---
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Sensors: ${if (!healthServiceConnected) "서비스 연결 안됨" else if (isTracking) "측정 중" else "중지됨"}",
+                        style = MaterialTheme.typography.caption1,
+                        color = if (isTracking) Color.Green else LocalContentColor.current
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                    ) {
+                        Button(
+                            onClick = onStartTrackingClick,
+                            // 헬스 서비스 연결되고, 현재 트래킹 중이 아닐 때만 활성화
+                            enabled = healthServiceConnected && !isTracking,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("측정 시작", maxLines = 1)
+                        }
+                        Button(
+                            onClick = onStopTrackingClick,
+                            // 현재 트래킹 중일 때만 활성화
+                            enabled = isTracking,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("측정 중지", maxLines = 1)
+                        }
+                    }
+                    // --- 끝: 센서 트래킹 상태 및 버튼 추가 ---
+
+
+                    Spacer(modifier = Modifier.padding(vertical = 8.dp)) // Use Divider instead of Spacer for visual separation
+
+                    // 2. HR 데이터 표시
+                    Text("Heart Rate", style = MaterialTheme.typography.caption1, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (hrData != null && isTracking) { // isTracking 조건 추가
+                        Text("Status: ${hrData.status} (${getHrStatusString(hrData.status)})")
+                        Text("HR: ${hrData.hr} bpm")
+                        Text("IBI: ${hrData.ibi} ms (Q: ${hrData.qIbi})")
+                    } else {
+                        Text("Status: N/A")
+                        Text("HR: --- bpm")
+                        Text("IBI: --- ms (Q: -)")
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 3. PPG 데이터 표시
+                    Text("Raw PPG", style = MaterialTheme.typography.caption1, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (ppgData != null && isTracking) { // isTracking 조건 추가
+                        val tsFormatted = try {
+                            timestampFormatter.format(Date(TimeUnit.NANOSECONDS.toMillis(ppgData.timestampNs)))
+                        } catch (e: Exception) { "--:--:--.---" }
+                        Text("Time: $tsFormatted")
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Text("G: ${ppgData.green}")
+                        }
+                        Text("greenStatus: ${ppgData.greenStatus ?: "N/A"} (${getPpgStatusString(ppgData.greenStatus)})")
+                    } else {
+                        Text("Time: --:--:--.---")
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Text("G: ---")
+                            Text("IR: ---")
+                            Text("R: ---")
+                        }
+                        Text("Status: N/A")
+                    }
+                }
+            }
+        }
     }
 
-    // DeviceChipItem 제거
-
-    // --- 권한 확인 및 요청 관련 함수 (수정) ---
-    private fun checkAndRequestPermissions() {
-        val permissionsToRequest = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // 연결 권한 (필수)
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            // 스캔 권한 (직접 연결에는 필수 아님, 필요 시 추가)
-            // if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-            //    permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN)
-            // }
-        } else {
-            // 이전 버전 권한 (필수)
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH)
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADMIN) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_ADMIN)
-            }
-            // 위치 권한 (직접 연결에는 필수 아님)
-            // if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            //     permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            // }
+    // --- 권한 관련 함수 (동일) ---
+    private fun getRequiredPermissions(): List<String> { /* ... 기존과 동일 ... */
+        val permissions = mutableListOf(
+            Manifest.permission.BODY_SENSORS // 센서 권한
+        )
+        // 블루투스 관련 권한
+        permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        return permissions
+    }
+    private fun checkAndRequestPermissions() { /* ... 기존과 동일 ... */
+        val permissionsToRequest = getRequiredPermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
-        // 필요한 권한이 있다면 요청
         if (permissionsToRequest.isNotEmpty()) {
-            Log.i(TAG, "Requesting necessary permissions: ${permissionsToRequest.joinToString()}")
-            requestMultiplePermissions.launch(permissionsToRequest.toTypedArray())
+            Log.i(TAG, "Requesting permissions: ${permissionsToRequest.joinToString()}")
+            requestMultiplePermissionsLauncher.launch(permissionsToRequest.toTypedArray())
         } else {
-            Log.d(TAG, "Necessary permissions already granted.")
-            checkBluetoothEnabled() // 권한 있으면 BT 활성화 확인
+            Log.d(TAG, "All required permissions already granted.")
+            allPermissionsGranted = true
+            initializeAfterPermissions()
         }
     }
-
-    // --- 현재 필요한 모든 권한이 있는지 확인하는 함수 (수정) ---
-    private fun checkPermissions(): Boolean {
-        val connectPermissionGranted: Boolean
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            connectPermissionGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-        } else {
-            connectPermissionGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED &&
-                    ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED
+    private fun initializeAfterPermissions() { /* ... 기존과 동일 ... */
+        if (!allPermissionsGranted) {
+            Log.w(TAG, "Cannot initialize, permissions not granted.")
+            return
         }
-
-        // 스캔, 위치 권한 체크 제거 (현재 로직 기준)
-
-        if (!connectPermissionGranted) {
-            Log.w(TAG, "Permission check FAILED: Missing Connect Permission")
+        Log.d(TAG, "Permissions granted, proceeding with initialization...")
+        val btEnabled = checkBluetoothEnabled() // Check BT status first
+        createAndConnectSdk() // Try connecting to SDK regardless of BT
+    }
+    private fun checkPermissions(): Boolean { /* ... 기존과 동일 ... */
+        val allGranted = getRequiredPermissions().all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-        return connectPermissionGranted
+        if (!allGranted) {
+            Log.w(TAG, "Runtime permission check FAILED.")
+        }
+        return allGranted
     }
 
-
-    // --- 블루투스 활성화 확인 및 요청 (이전과 동일) ---
+    // --- 블루투스 활성화 확인 (동일) ---
     @SuppressLint("MissingPermission")
-    private fun checkBluetoothEnabled(): Boolean {
-        // Adapter null 체크 추가
-        if (bluetoothAdapter == null) {
-            Log.e(TAG, "Bluetooth adapter is null in checkBluetoothEnabled.")
-            updateStatus("블루투스 오류")
+    private fun checkBluetoothEnabled(): Boolean { /* ... 기존과 동일 ... */
+        val hasBtPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        if (!hasBtPermission) {
+            Log.e(TAG, "Missing Bluetooth permission for checking/enabling.")
             return false
         }
-        if (bluetoothAdapter?.isEnabled == false) {
-            Log.i(TAG, "Bluetooth is not enabled. Requesting user to enable.")
-            updateStatus("블루투스 활성화 필요")
+        if (bluetoothAdapter == null) { Log.e(TAG, "BT adapter null"); updateStatus("블루투스 오류"); return false }
 
+        if (bluetoothAdapter?.isEnabled == false) {
+            Log.i(TAG, "Bluetooth is not enabled. Requesting.")
+            updateStatus("블루투스 활성화 필요")
             val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-            // 활성화 요청에 필요한 권한 확인 (CONNECT 또는 BLUETOOTH)
-            val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-            } else {
-                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
-            }
-            if (hasPermission) {
-                try { requestEnableBluetooth.launch(enableBtIntent) }
-                catch (e: SecurityException) { Log.e(TAG, "SecurityException on enable BT", e); updateStatus("권한 오류") }
-                catch (e: Exception) { Log.e(TAG, "Exception on enable BT", e); updateStatus("오류 발생") }
-            } else {
-                Log.e(TAG, "Cannot request BT enable without permission.")
-                checkAndRequestPermissions() // 권한 재요청
-            }
+            try {
+                requestEnableBluetoothLauncher.launch(enableBtIntent)
+            } catch (e: SecurityException) { Log.e(TAG, "SecEx on enable BT", e); updateStatus("권한 오류") }
+            catch (e: Exception) { Log.e(TAG, "Ex on enable BT", e); updateStatus("오류 발생") }
             return false
         }
         Log.d(TAG, "Bluetooth is enabled.")
         return true
     }
 
-    // --- 기기 검색 시작 함수 제거 ---
-    // private fun startScan() { ... }
-
-    // --- 주변 기기 검색 시작 함수 제거 ---
-    // private fun startBluetoothDiscovery() { ... }
-
-    // --- 주변 기기 검색 취소 함수 제거 ---
-    // private fun cancelBluetoothDiscovery() { ... }
-
-    // --- BroadcastReceiver 등록 해제 함수 제거 ---
-    // private fun unregisterDiscoveryReceiver() { ... }
-
-
-    // --- [추가] 지정된 PC 주소로 연결 시도 ---
-    @SuppressLint("MissingPermission")
-    private fun connectToTargetPC() {
-        // 0. 상태 확인
-        if (isConnecting) {
-            Log.w(TAG, "Already connecting.")
+    // --- Health SDK 연결 시도 (동일) ---
+    private fun createAndConnectSdk() { /* ... 기존과 동일 ... */
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BODY_SENSORS) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Cannot connect SDK without BODY_SENSORS permission.")
+            updateStatus("센서 권한 필요")
             return
         }
-        if (bluetoothSocket?.isConnected == true) {
-            Log.w(TAG, "Already connected.")
-            updateStatus("이미 연결됨") // 사용자에게 알림
+        if (healthServiceConnected || connectionManager != null) {
+            Log.d(TAG, "ConnectionManager already exists or connected. Skipping.")
             return
         }
 
-        // 1. 권한 확인
-        if (!checkPermissions()) {
-            Log.e(TAG, "Cannot connect without CONNECT permission.")
-            updateStatus("권한 없음")
-            checkAndRequestPermissions() // 권한 요청
+        Log.i(TAG, "Creating ConnectionManager and connecting to Health Tracking Service...")
+        try {
+            connectionManager = ConnectionManager(this, healthConnectionObserver) // 가정
+            connectionManager?.connect()
+            Log.d(TAG, "connectionManager?.connect() called.")
+            updateStatus("헬스 서비스 연결 중...")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to create or connect ConnectionManager: ${t.message}", t)
+            updateStatus("헬스 서비스 연결 불가")
+        }
+    }
+
+    // --- 센서 리스너 초기화 (수정됨: 자동 시작 제거) ---
+    private fun initializeListenersAndTrackers() {
+        if (!healthServiceConnected || connectionManager == null) {
+            Log.e(TAG, "Cannot initialize listeners: Health Service not connected or ConnectionManager is null.")
+            return
+        }
+        Log.i(TAG, "Initializing listeners...")
+        // 리스너 객체 생성 또는 가져오기 (ConnectionManager가 제공한다고 가정)
+//        heartRateListener = HeartRateListener()
+//        ppgListener = PpgListener() // 실제 구현에 맞게 수정
+
+        heartRateListener = HeartRateListener(/* 필요한 인자 전달 */)
+        connectionManager?.initHeartRate(heartRateListener!!) // 실제 초기화 메서드 호출 (가정)
+        ppgListener = PpgListener(/* args */)
+        connectionManager?.initPpg(ppgListener!!)
+
+        Log.i(TAG, "Listeners initialized. Ready to start tracking.")
+        // 여기서 startTracker() 호출 제거됨
+    }
+
+    // --- New: 센서 트래킹 시작 함수 ---
+    private fun startSensorTracking() {
+        Log.d(TAG, "startSensorTracking called.")
+        if (isTrackingSensors) {
+            Log.w(TAG, "Sensors already tracking.")
+            return
+        }
+        if (!healthServiceConnected || connectionManager == null) {
+            Log.e(TAG, "Cannot start tracking: Health Service not connected or ConnectionManager is null.")
+            Toast.makeText(this, "헬스 서비스 연결 필요", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // 센서 권한 재확인 (방어적 코드)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BODY_SENSORS) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Cannot start tracking: BODY_SENSORS permission missing.")
+            Toast.makeText(this, "센서 권한 필요", Toast.LENGTH_SHORT).show()
+            checkAndRequestPermissions() // 다시 권한 요청
             return
         }
 
-        // 2. 블루투스 활성화 확인
-        if (!checkBluetoothEnabled()) {
-            // 활성화 요청은 checkBluetoothEnabled 내부에서 처리
+        Log.i(TAG, "Starting sensor tracking...")
+        try {
+            heartRateListener?.startTracker()
+            ppgListener?.startTracker()
+            isTrackingSensors = true // 상태 업데이트
+            Log.i(TAG, "Sensor tracking status set to: $isTrackingSensors")
+            // 데이터 초기화
+            latestHrData = null
+            latestPpgData = null
+            updateStatus("센서 측정 시작됨") // 상태 메시지 업데이트
+            Toast.makeText(this, "센서 측정 시작", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting trackers: ${e.message}", e)
+            isTrackingSensors = false // 시작 실패 시 상태 복원
+            Toast.makeText(this, "센서 시작 오류", Toast.LENGTH_SHORT).show()
+            updateStatus("센서 시작 오류")
+        }
+    }
+
+    // --- New: 센서 트래킹 중지 함수 ---
+    private fun stopSensorTracking() {
+        Log.d(TAG, "stopSensorTracking called.")
+        if (!isTrackingSensors) {
+            // Log.d(TAG, "Sensors already stopped.") // 너무 자주 로깅될 수 있음
             return
         }
-
-        // 3. BluetoothDevice 객체 가져오기
-        val targetDevice: BluetoothDevice? = try {
-            // CONNECT (S+) 또는 BLUETOOTH (S-) 권한 필요
-            bluetoothAdapter?.getRemoteDevice(TARGET_PC_ADDRESS)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException getting remote device $TARGET_PC_ADDRESS", e)
-            updateStatus("권한 오류 (기기)")
-            null
-        } catch (e: IllegalArgumentException) {
-            Log.e(TAG, "Invalid Bluetooth address: $TARGET_PC_ADDRESS", e)
-            updateStatus("잘못된 PC 주소")
-            null
-        } catch (e: Exception){
-            Log.e(TAG, "Error getting remote device $TARGET_PC_ADDRESS", e)
-            updateStatus("기기 접근 오류")
-            null
-        }
-
-        // 4. 기기 객체 얻었으면 연결 시도
-        if (targetDevice != null) {
-            Log.i(TAG, "Target PC device found: ${targetDevice.name ?: TARGET_PC_ADDRESS}")
-            initiateConnectionWithDevice(targetDevice)
-        } else {
-            Log.e(TAG, "Failed to get BluetoothDevice for $TARGET_PC_ADDRESS")
-            // 상태 업데이트는 try-catch 블록 내부에서 이미 처리됨
+        Log.i(TAG, "Stopping sensor tracking...")
+        try {
+            heartRateListener?.stopTracker()
+            ppgListener?.stopTracker()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping trackers: ${e.message}", e)
+            // 오류가 발생해도 상태는 중지된 것으로 간주
+        } finally {
+            isTrackingSensors = false // 상태 업데이트
+            // UI 클리어를 위해 null로 설정 (선택 사항)
+            // latestHrData = null
+            // latestPpgData = null
+            updateStatus("센서 측정 중지됨") // 상태 메시지 업데이트
+            // Toast.makeText(this, "센서 측정 중지", Toast.LENGTH_SHORT).show() // 중지는 조용히
         }
     }
 
 
-    // --- 특정 기기와 연결 시도 (거의 동일, 상태 업데이트 추가) ---
-    @SuppressLint("MissingPermission") // 함수 초입에서 checkPermissions() 호출됨
-    private fun initiateConnectionWithDevice(device: BluetoothDevice) {
-        // 이미 checkPermissions()를 통과했지만, 방어적으로 추가 가능
-        if (!checkPermissions()) { Log.e(TAG,"Perm check fail in initiateConnection"); return }
-        if (isConnecting) { Log.w(TAG, "Already connecting"); return }
+    // --- 블루투스 연결 관련 함수들 (동일) ---
+    @SuppressLint("MissingPermission")
+    private fun connectToTargetPC() { /* ... 기존과 동일 ... */
+        if (isConnectingBluetooth || bluetoothSocket?.isConnected == true) { Log.w(TAG, "BT Already connecting or connected."); return }
+        if (!checkPermissions()) { checkAndRequestPermissions(); return }
+        if (!checkBluetoothEnabled()) { return }
 
-        val deviceName = try { device.name } catch (e: SecurityException) { device.address } ?: "Unknown"
-        updateStatus("연결 시도 중: $deviceName")
-        isConnecting = true // 메인 스레드에서 isConnecting 업데이트
+        val targetDevice: BluetoothDevice? = try {
+            bluetoothAdapter?.getRemoteDevice(TARGET_PC_ADDRESS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting remote device $TARGET_PC_ADDRESS", e)
+            updateStatus(when(e) {
+                is SecurityException -> "권한 오류 (기기)"
+                is IllegalArgumentException -> "잘못된 PC 주소"
+                else -> "기기 접근 오류"
+            })
+            null
+        }
+        targetDevice?.let { initiateConnectionWithDevice(it) }
+            ?: Log.e(TAG, "Target device object is null, cannot connect.")
+    }
+    @SuppressLint("MissingPermission")
+    private fun initiateConnectionWithDevice(device: BluetoothDevice) { /* ... 기존과 동일 ... */
+        if (!checkPermissions()) { Log.e(TAG,"BT Perm check fail in initiateConnection"); return }
+        if (isConnectingBluetooth) { Log.w(TAG, "Already attempting BT connection"); return }
 
-        connectionJob?.cancel()
-        connectionJob = lifecycleScope.launch(Dispatchers.IO) {
-            Log.i(TAG, "Attempting to connect to $deviceName [${device.address}]")
+        val deviceName = try { device.name ?: device.address } catch (e: SecurityException) { device.address }
+        updateStatus("BT 연결 시도 중: $deviceName")
+        isConnectingBluetooth = true
+
+        bluetoothConnectionJob?.cancel()
+        bluetoothConnectionJob = lifecycleScope.launch(Dispatchers.IO) {
             var tempSocket: BluetoothSocket? = null
             try {
-                // CONNECT 권한 필요
                 tempSocket = device.createRfcommSocketToServiceRecord(MY_UUID)
-                tempSocket?.connect() // Blocking call - CONNECT 권한 필요
+                tempSocket?.connect()
 
                 bluetoothSocket = tempSocket
                 outputStream = tempSocket?.outputStream
-                Log.i(TAG, "Successfully connected to $deviceName")
+                Log.i(TAG, "BT Successfully connected to $deviceName")
 
                 withContext(Dispatchers.Main) {
-                    connectionStatus = "연결 성공: $deviceName"; isConnecting = false
+                    btConnectionStatus = "BT 연결 성공: $deviceName"; isConnectingBluetooth = false
                     Toast.makeText(this@MainActivity, "PC 연결 성공!", Toast.LENGTH_SHORT).show()
                 }
-                // TODO: 여기에 실제 생체 데이터 전송 로직 시작 또는 활성화 코드 추가
-                sendData("Hello from Wear OS! Connected to $deviceName at ${System.currentTimeMillis()}")
+                sendDataViaBluetooth(convertToJson(mapOf("status" to "connected", "device" to Build.MODEL)))
 
-            } catch (e: Exception) { // IOException, SecurityException 등
-                Log.e(TAG, "Connection failed to $deviceName: ${e.message}", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "BT Connection failed to $deviceName: ${e.message}", e)
                 val errorMsg = when(e){
-                    is IOException -> "IO 오류 (${e.message})"
-                    is SecurityException -> "권한 오류 (연결)"
-                    else -> "연결 실패 (${e.javaClass.simpleName})"
+                    is IOException -> "BT IO 오류"
+                    is SecurityException -> "BT 권한 오류 (연결)"
+                    else -> "BT 연결 실패"
                 }
                 withContext(Dispatchers.Main) {
-                    connectionStatus = "연결 실패: $errorMsg"; isConnecting = false
+                    btConnectionStatus = errorMsg; isConnectingBluetooth = false
                     Toast.makeText(this@MainActivity, "PC 연결 실패: $errorMsg", Toast.LENGTH_LONG).show()
                 }
-                closeSocket() // 실패 시 소켓 정리
+                closeBluetoothSocket()
             }
-            // finally 블록 제거됨, isConnecting = false 는 성공/실패 경로에서 처리
         }
     }
 
-    // --- 데이터 전송 함수 ---
-    // 이 함수는 이제 외부(예: 센서 데이터 콜백)에서 호출되어야 합니다.
-    fun sendData(message: String) {
+    // --- 데이터 전송 함수 (동일) ---
+    fun sendDataViaBluetooth(jsonData: String) { /* ... 기존과 동일 ... */
         if (outputStream == null || bluetoothSocket?.isConnected != true) {
-            // Log.w(TAG, "Cannot send data: Not connected.") // 너무 자주 로깅될 수 있음
-            // 연결이 끊겼을 때의 처리 (예: UI 업데이트, 재연결 시도 등)
-            if (connectionStatus.startsWith("연결 성공")) { // 연결 상태였는데 끊긴 경우
-                updateStatus("연결 끊김 (전송 시도)")
-                // 필요 시 자동으로 재연결 시도 로직 추가
-                // connectToTargetPC()
+            if (btConnectionStatus.startsWith("BT 연결 성공")) {
+                updateStatus("BT 연결 끊김 (전송 시도)")
             }
             return
         }
-        // 데이터 전송은 IO 스레드에서
         lifecycleScope.launch(Dispatchers.IO) {
-            val msgBuffer: ByteArray = message.toByteArray() // UTF-8 기본 인코딩
-            Log.d(TAG, "Sending data (${msgBuffer.size} bytes): \"$message\"")
+            val msgBuffer: ByteArray = jsonData.toByteArray(Charsets.UTF_8)
             try {
-                // CONNECT 권한 필요 (소켓 유효성으로 갈음)
                 outputStream?.write(msgBuffer)
                 outputStream?.flush()
-                // Log.i(TAG, "Data sent successfully.") // 성공 로깅은 너무 많을 수 있음
-                // 성공 시 UI 피드백은 필요에 따라 추가 (예: 마지막 전송 시간 표시)
             } catch (e: IOException) {
-                Log.e(TAG, "IOException during sending data: ${e.message}")
-                // UI 업데이트 (메인 스레드) - 실패 알림
+                Log.e(TAG, "IOException during sending BT data: ${e.message}")
                 withContext(Dispatchers.Main) {
-                    // 데이터 전송 실패 시 상태 업데이트 또는 Toast
-                    // connectionStatus = "데이터 전송 실패" // 상태를 계속 덮어쓸 수 있으므로 주의
-                    // Toast.makeText(this@MainActivity, "데이터 전송 중 오류", Toast.LENGTH_SHORT).show()
+                    // Toast.makeText(this@MainActivity, "데이터 전송 오류", Toast.LENGTH_SHORT).show()
                 }
-                // ★ 중요: 데이터 전송 실패 시 연결 상태 확인 및 소켓 닫기 고려
-                closeSocket() // 연결 끊김으로 간주하고 정리
-                updateStatus("연결 끊김 (전송 오류)")
+                closeBluetoothSocket()
+                updateStatus("BT 연결 끊김 (전송 오류)")
             }
         }
     }
 
-    // --- 연결 끊기 및 리소스 정리 ---
-    private fun disconnect() {
-        // cancelBluetoothDiscovery() 제거
-        connectionJob?.cancel()
-        closeSocket()
-
-        // 상태 변수 초기화 (메인 스레드)
-        lifecycleScope.launch(Dispatchers.Main) {
-            if (isConnecting || bluetoothSocket?.isConnected == true || !connectionStatus.contains("끊김")) {
-                connectionStatus = "연결 끊김"
-            }
-            isConnecting = false
-            // isScanning = false 제거
+    // --- JSON 변환 함수 (동일) ---
+    private fun convertToJson(data: Any): String { /* ... 기존과 동일 ... */
+        return try {
+            gson.toJson(data)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error converting data to JSON for BT: ${e.message}")
+            "{\"error\":\"json conversion failed\", \"data_type\":\"${data::class.simpleName}\"}"
         }
-        Log.i(TAG, "Disconnected.")
     }
 
-    // --- 소켓 및 스트림 닫기 (이전과 동일) ---
-    private fun closeSocket() {
-        if (bluetoothSocket == null && outputStream == null) return // 이미 닫혔으면 중복 실행 방지
+    // --- 블루투스 연결 해제 (동일) ---
+    private fun disconnectBluetooth() { /* ... 기존과 동일 ... */
+        bluetoothConnectionJob?.cancel()
+        closeBluetoothSocket()
+        updateStatus("BT 연결 끊김")
+        isConnectingBluetooth = false
+        Log.i(TAG, "Bluetooth Disconnected.")
+    }
+
+    // --- 블루투스 소켓 닫기 (동일) ---
+    private fun closeBluetoothSocket() { /* ... 기존과 동일 ... */
+        if (bluetoothSocket == null && outputStream == null) return
         Log.d(TAG,"Closing BT socket and stream.")
         try { outputStream?.close() } catch (e: IOException) { Log.w(TAG,"IOE closing OS: ${e.message}")} finally { outputStream = null }
         try { bluetoothSocket?.close() } catch (e: IOException) { Log.w(TAG,"IOE closing BS: ${e.message}")} finally { bluetoothSocket = null }
+        updateStatus("BT 연결 없음")
+        isConnectingBluetooth = false
     }
 
-    override fun onDestroy() {
-        super.onDestroy(); Log.d(TAG, "onDestroy called."); disconnect()
+    // --- 상태 코드 -> 문자열 변환 함수 (동일) ---
+    private fun getHrStatusString(status: Int?): String { /* ... 기존과 동일 ... */
+        return when (status) {
+            Status.STATUS_FIND_HR -> "Finding HR"
+            Status.STATUS_ATTACHED -> "Attached"
+            Status.STATUS_DETECT_MOVE -> "Moving"
+            Status.STATUS_DETACHED -> "Detached"
+            Status.STATUS_LOW_RELIABILITY -> "Low Reliability"
+            Status.STATUS_VERY_LOW_RELIABILITY -> "Very Low Reliability"
+            Status.STATUS_NO_DATA_FLUSH -> "No Data Flush"
+            Status.STATUS_NONE -> "None"
+            else -> "Unknown ($status)"
+        }
+    }
+    private fun getPpgStatusString(status: Int?): String { /* ... 기존과 동일 ... */
+        return when (status) {
+            0 -> "Good" // 예시
+            -1 -> "Noisy" // 예시
+            -3 -> "Detached" // 예시
+            null -> "N/A"
+            else -> "Code $status"
+        }
+    }
+
+} // End of MainActivity
+
+
+// --- 필요한 데이터 클래스 및 객체 정의 (이전과 동일) ---
+// data class HeartRateData(...)
+// data class PpgData(...)
+// object Status { ... } // 실제 값 사용
+
+// --- 가정하는 인터페이스 및 클래스 (이전과 동일, 실제 SDK 구현 필요) ---
+// interface TrackerDataObserver { ... }
+// class TrackerDataNotifier { ... }
+// interface ConnectionObserver { ... }
+// class ConnectionManager(context: Context, observer: ConnectionObserver) { ... }
+// open class BaseListener { ... }
+// class HeartRateListener : BaseListener() { ... }
+// class PpgListener : BaseListener() { ... }
+
+
+// --- Jetpack Compose Previews (수정됨) ---
+
+@Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true, name = "Preview Initial")
+@Composable
+fun PreviewInitial() {
+    MaterialTheme {
+        WearAppPreview(
+            btStatus = "대기 중",
+            isConnecting = false,
+            isConnected = false,
+            hrData = null,
+            ppgData = null,
+            isTracking = false,      // 초기 상태: 트래킹 중 아님
+            healthServiceConnected = false // 초기 상태: 서비스 연결 안됨
+        )
+    }
+}
+
+@Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true, name = "Preview Connected & Tracking")
+@Composable
+fun PreviewConnectedTracking() {
+    MaterialTheme {
+        WearAppPreview(
+            btStatus = "BT 연결 성공: PC",
+            isConnecting = false,
+            isConnected = true,
+            hrData = HeartRateData(status = Status.STATUS_FIND_HR, hr = 75, ibi = 800, qIbi = 0),
+            ppgData = PpgData(timestampNs = System.nanoTime(), green = 15000, greenStatus = 0),
+            isTracking = true,       // 트래킹 중 상태
+            healthServiceConnected = true // 서비스 연결됨 상태
+        )
+    }
+}
+
+@Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true, name = "Preview Connected & Stopped")
+@Composable
+fun PreviewConnectedStopped() {
+    MaterialTheme {
+        WearAppPreview(
+            btStatus = "BT 연결 성공: PC",
+            isConnecting = false,
+            isConnected = true,
+            hrData = null, // 중지 시 데이터 없음 (또는 이전 데이터 표시 가능)
+            ppgData = null,
+            isTracking = false,      // 트래킹 중지 상태
+            healthServiceConnected = true // 서비스 연결됨 상태
+        )
     }
 }
 
 
-// --- Jetpack Compose Previews (단순화된 UI 반영) ---
-
-@Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true, name = "Initial State")
+// Preview 전용 Composable (MainActivity의 WearApp 로직과 유사하게 만듦, 수정됨)
 @Composable
-fun PreviewInitialDirect() {
-    MaterialTheme {
-        Scaffold {
+fun WearAppPreview(
+    btStatus: String,
+    isConnecting: Boolean,
+    isConnected: Boolean,
+    hrData: HeartRateData?,
+    ppgData: PpgData?,
+    // --- New parameters for Preview ---
+    isTracking: Boolean,
+    healthServiceConnected: Boolean
+) {
+    val previewTimestampFormatter = remember {
+        SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+    }
+    val blackBackgroundColors = MaterialTheme.colors.copy(
+        background = Color.Black, onBackground = Color.White,
+        surface = Color.Black, onSurface = Color.White,
+        primary = Color(0xFFBB86FC), onPrimary = Color.Black
+    )
+
+    MaterialTheme(colors = blackBackgroundColors) {
+        Scaffold(
+            timeText = { TimeText(modifier = Modifier.padding(top = 5.dp)) }
+        ) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("대기 중", textAlign = TextAlign.Center, style = MaterialTheme.typography.title3, modifier = Modifier.padding(bottom = 16.dp))
-                Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                    Button(onClick={}, modifier=Modifier.weight(1f)){Text("PC 연결")}
-                    Button(onClick={}, enabled=false, modifier=Modifier.weight(1f)){Text("연결 끊기")}
+                // BT Section (unchanged)
+                Text(
+                    text = "BT: $btStatus", textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 8.dp), style = MaterialTheme.typography.title3,
+                    color = if (isConnected) Color(0xFF4CAF50) else LocalContentColor.current
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    Button(onClick = {}, enabled = !isConnecting && !isConnected, modifier = Modifier.weight(1f)) { Text("PC 연결", maxLines = 1) }
+                    Button(onClick = {}, enabled = isConnecting || isConnected, modifier = Modifier.weight(1f)) { Text("연결 끊기", maxLines = 1) }
+                }
+                if (isConnecting) { CircularProgressIndicator(modifier = Modifier.padding(bottom=8.dp).size(24.dp), strokeWidth = 2.dp) }
+
+                // --- Sensor Tracking Section (Added to Preview) ---
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Sensors: ${if (!healthServiceConnected) "서비스 연결 안됨" else if (isTracking) "측정 중" else "중지됨"}",
+                    style = MaterialTheme.typography.caption1,
+                    color = if (isTracking) Color.Green else LocalContentColor.current
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    Button(onClick = {}, enabled = healthServiceConnected && !isTracking, modifier = Modifier.weight(1f)) {
+                        Text("측정 시작", maxLines = 1)
+                    }
+                    Button(onClick = {}, enabled = isTracking, modifier = Modifier.weight(1f)) {
+                        Text("측정 중지", maxLines = 1)
+                    }
+                }
+                // --- End Sensor Tracking Section ---
+
+                Spacer(modifier = Modifier.padding(vertical = 8.dp))
+
+                // HR Section (add isTracking check)
+                Text("Heart Rate", style = MaterialTheme.typography.caption1, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(4.dp))
+                if (hrData != null && isTracking) { // Check isTracking
+                    Text("Status: ${hrData.status} (${MainActivity().getHrStatusString(hrData.status)})") // Use helper
+                    Text("HR: ${hrData.hr} bpm")
+                    Text("IBI: ${hrData.ibi} ms (Q: ${hrData.qIbi})")
+                } else {
+                    Text("Status: N/A"); Text("HR: --- bpm"); Text("IBI: --- ms (Q: -)")
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // PPG Section (add isTracking check)
+                Text("Raw PPG", style = MaterialTheme.typography.caption1, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(4.dp))
+                if (ppgData != null && isTracking) { // Check isTracking
+                    val tsFormatted = try {
+                        previewTimestampFormatter.format(Date(TimeUnit.NANOSECONDS.toMillis(ppgData.timestampNs)))
+                    } catch (e: Exception) { "--:--:--.---" }
+                    Text("Time: $tsFormatted")
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Text("G: ${ppgData.green}")
+                    }
+                    Text("Status: ${ppgData.greenStatus ?: "N/A"} (${MainActivity().getPpgStatusString(ppgData.greenStatus)})") // Use helper
+                } else {
+                    Text("Time: --:--:--.---")
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Text("G: ---"); Text("IR: ---"); Text("R: ---")
+                    }
+                    Text("Status: N/A")
                 }
             }
         }
     }
 }
 
-@Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true, name = "Connecting State")
-@Composable
-fun PreviewConnectingDirect() {
-    MaterialTheme {
-        Scaffold {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text("연결 시도 중: TargetPC...", textAlign = TextAlign.Center, style = MaterialTheme.typography.title3, modifier = Modifier.padding(bottom = 16.dp))
-                Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                    Button(onClick={}, enabled=false, modifier=Modifier.weight(1f)){Text("PC 연결")}
-                    Button(onClick={}, enabled=true, modifier=Modifier.weight(1f)){Text("연결 끊기")} // 연결 시도 중에도 끊기 가능
-                }
-                CircularProgressIndicator(modifier = Modifier.padding(top=8.dp)) // 연결 중 표시
-            }
-        }
-    }
-}
-
-
-@Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true, name = "Connected State")
-@Composable
-fun PreviewConnectedDirect() {
-    MaterialTheme {
-        Scaffold {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text("연결 성공: TargetPC", textAlign = TextAlign.Center, style = MaterialTheme.typography.title3, modifier = Modifier.padding(bottom = 16.dp))
-                Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                    Button(onClick={}, enabled=false, modifier=Modifier.weight(1f)){Text("PC 연결")} // 이미 연결됨
-                    Button(onClick={}, enabled=true, modifier=Modifier.weight(1f)){Text("연결 끊기")}
-                }
-                // TODO: 여기에 데이터 전송 시작 버튼 또는 상태 표시 추가 가능
-            }
-        }
-    }
-}
+// MainActivity 내의 private 함수를 Preview에서 사용하기 위한 임시 public 함수 (기존과 동일)
+// 실제로는 ViewModel 등을 사용하여 상태 및 로직 분리 권장
+fun MainActivity.getHrStatusString(status: Int?): String { return this.getHrStatusString(status)}
+fun MainActivity.getPpgStatusString(status: Int?): String { return this.getPpgStatusString(status) }

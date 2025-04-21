@@ -1,4 +1,4 @@
-package com.example.bluetoothexample.presentation
+package myHealth
 
 import android.util.Log
 import com.samsung.android.service.health.tracking.HealthTracker
@@ -88,6 +88,7 @@ class HeartRateListener : BaseListener() { // BaseListener 상속
             // 데이터 변경 알림 (TrackerDataNotifier는 Java Singleton으로 가정)
             // TrackerDataNotifier.getInstance().notifyHeartRateTrackerObservers(hrData)
             Log.d(APP_TAG, "Processed HR Data: $hrData") // 생성된 데이터 로그 출력
+            TrackerDataNotifier.notifyHeartRateTrackerObservers(hrData)
 
             // 원본 데이터 포인트 로깅
             // Log.d(APP_TAG, "Original DataPoint: ${dataPoint.toString()}")

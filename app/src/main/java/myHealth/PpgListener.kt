@@ -1,10 +1,12 @@
-package com.example.bluetoothexample.presentation
+package myHealth
 
 import android.util.Log
+import com.google.gson.Gson
 
 import com.samsung.android.service.health.tracking.HealthTracker
 import com.samsung.android.service.health.tracking.data.DataPoint
 import com.samsung.android.service.health.tracking.data.ValueKey
+import kotlin.time.Duration.Companion.nanoseconds
 
 /**
  * Raw PPG 데이터 수신 및 처리를 위한 리스너.
@@ -51,39 +53,32 @@ class PpgListener : BaseListener() {
     fun readValuesFromDataPoint(dataPoint: DataPoint) {
         try {
             // 1. 타임스탬프 추출
-            val timestamp: Long = dataPoint.timestamp
+            val timestampNs: Long = dataPoint.getTimestamp()
 
             // 2. 각 PPG 채널 값 추출
             // getValue가 null을 반환할 수 있으므로 Nullable 타입(Int?)으로 받고 확인
-            val green: Int? = dataPoint.getValue(ValueKey.PpgSet.PPG_GREEN)
-            val ir: Int? = dataPoint.getValue(ValueKey.PpgSet.PPG_IR)
-            val red: Int? = dataPoint.getValue(ValueKey.PpgSet.PPG_RED)
+            val green = dataPoint.getValue(ValueKey.PpgGreenSet.PPG_GREEN) as? Int
 
             // 3. 상태 값 추출 (여기서는 Green 채널 상태만 사용 - 필요시 수정)
             // 상태값이 항상 제공되는지, Nullable인지 확인 필요
-            val greenStatus: Int = dataPoint.getValue(ValueKey.PpgSet.GREEN_STATUS) ?: Status.STATUS_NONE
-            val redStatus: Int = dataPoint.getValue(ValueKey.PpgSet.RED_STATUS) ?: Status.STATUS_NONE
+            val greenStatus: Int = dataPoint.getValue(ValueKey.PpgGreenSet.STATUS) ?: Status.STATUS_NONE
             // val irStatus: Int = dataPoint.getValue(ValueKey.PpgSet.IR_STATUS) ?: Status.STATUS_NONE
-
+            Log.d(APP_TAG, "PPG Values: Green: $green, Green Status: $greenStatus")
             // 4. 필수 값들이 null이 아닌지 확인 (타임스탬프는 보통 null이 아님)
-            if (green == null || ir == null || red == null) {
-                Log.w(APP_TAG, "Received DataPoint with null PPG value(s). Skipping. Timestamp: $timestamp")
+            if (green == null) {
+                Log.w(APP_TAG, "Received DataPoint with null PPG value(s). Skipping. Timestamp: $timestampNs")
                 return // 필수 값 중 하나라도 없으면 이 DataPoint 처리 중단
             }
 
             // 5. PpgData 객체 생성 (Non-null 값 사용)
             val ppgData = PpgData(
-                timestampNs = timestamp,
+                timestampNs = timestampNs,
                 green = green, // Non-null 보장됨
-                ir = ir,       // Non-null 보장됨
-                red = red,     // Non-null 보장됨
                 greenStatus = greenStatus, // status는 Nullable일 수 있음
-                redStatus = redStatus // status는 Nullable일 수 있음
             )
 
             // 6. 데이터 처리/전송
-            val jsonData = convertToJson(ppgData) // JSON 변환 함수 호출
-            // sendData(jsonData) // sendData 함수는 Service 내에서 호출되어야 함
+            TrackerDataNotifier.notifyPpgTrackerObservers(ppgData)
 
             Log.d(APP_TAG, "Processed PPG Data: $ppgData") // 생성된 데이터 로그 출력
 
@@ -93,14 +88,4 @@ class PpgListener : BaseListener() {
             Log.e(APP_TAG, "Error reading PPG values from DataPoint: ${e.message}", e)
         }
     }
-
-    // JSON 변환 함수 (임시)
-    private fun convertToJson(data: Any): String {
-        // 실제 구현에서는 Gson, Moshi 등 JSON 라이브러리 사용 권장
-        // 예: return Gson().toJson(data)
-        return data.toString() // 임시로 toString() 사용
-    }
-
-    // Bluetooth 데이터 전송 함수 (Service 내부에 구현되어야 함)
-    // private fun sendData(message: String) { ... }
 }

@@ -1,6 +1,7 @@
-package com.example.bluetoothexample.presentation
+package myHealth
 
 import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.samsung.android.service.health.tracking.HealthTracker
 
@@ -27,6 +28,7 @@ open class BaseListener {
 
     // Setter 함수들 (Kotlin 스타일)
     fun setHealthTracker(tracker: HealthTracker?) {
+        Log.i(APP_TAG, "setHealthTracker called with $tracker")
         this.healthTracker = tracker
     }
 
@@ -50,6 +52,10 @@ open class BaseListener {
      */
     fun startTracker() {
         Log.i(APP_TAG, "startTracker called")
+        if (handler == null) {
+            Log.w("BaseListenerKt", "Handler was null on startTracker, initializing now with MainLooper.")
+            handler = Handler(Looper.getMainLooper())
+        }
         // Nullable 프로퍼티 접근 시 안전 호출(?.) 사용
         Log.d(APP_TAG, "healthTracker: ${healthTracker?.toString()}")
         Log.d(APP_TAG, "trackerEventListener: ${trackerEventListener?.toString()}")
@@ -64,6 +70,10 @@ open class BaseListener {
                     // 실제 리스너 설정
                     healthTracker?.setEventListener(trackerEventListener) // 안전 호출(?.)
                     setHandlerRunning(true)
+                } else if (healthTracker == null) {
+                    Log.w(APP_TAG, "Cannot start tracker: healthTracker is null.")
+                } else if (trackerEventListener == null) {
+                    Log.w(APP_TAG, "Cannot start tracker: trackerEventListener is null.")
                 } else {
                     Log.w(APP_TAG, "Cannot start tracker: healthTracker or trackerEventListener is null.")
                 }
