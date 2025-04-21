@@ -1,4 +1,4 @@
-package com.cookandroid.bluetoothexample.presentation.theme
+package com.example.bluetoothexample.presentation.theme
 
 import androidx.compose.runtime.Composable
 import androidx.wear.compose.material.MaterialTheme
