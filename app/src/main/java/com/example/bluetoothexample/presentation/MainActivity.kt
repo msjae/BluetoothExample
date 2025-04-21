@@ -1,6 +1,9 @@
 package com.example.bluetoothexample.presentation // 실제 패키지 이름으로 변경하세요
 
-import android.Manifest // Manifest 임포트 추가
+// import com.samsung.health.multisensortracking.R // R 클래스 임포트 (실제 프로젝트의 R 사용)
+
+
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -16,13 +19,26 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color // Compose Color 사용
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
@@ -30,27 +46,29 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import androidx.wear.compose.material.*
+import androidx.wear.compose.material.Button
+import androidx.wear.compose.material.CircularProgressIndicator
+import androidx.wear.compose.material.LocalContentColor
+import androidx.wear.compose.material.MaterialTheme
+import androidx.wear.compose.material.Scaffold
+import androidx.wear.compose.material.Text
+import androidx.wear.compose.material.TimeText
 import com.example.bluetoothexample.R
-import com.google.gson.Gson // JSON 변환 예시용 (build.gradle에 추가 필요: implementation 'com.google.code.gson:gson:2.10.1')
-import com.samsung.android.service.health.tracking.HealthTrackerException // 예외 처리용
-
-import myHealth.ConnectionManager
-import myHealth.ConnectionObserver
-import myHealth.Status
-import myHealth.PpgData
-import myHealth.PpgListener
-import myHealth.TrackerDataNotifier // 가정
-import myHealth.TrackerDataObserver
-import myHealth.HeartRateData
-import myHealth.HeartRateListener
-// import com.samsung.health.multisensortracking.R // R 클래스 임포트 (실제 프로젝트의 R 사용)
-
-
+import com.google.gson.Gson
+import com.samsung.android.service.health.tracking.HealthTrackerException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import myHealth.ConnectionManager
+import myHealth.ConnectionObserver
+import myHealth.HeartRateData
+import myHealth.HeartRateListener
+import myHealth.PpgData
+import myHealth.PpgListener
+import myHealth.Status
+import myHealth.TrackerDataNotifier
+import myHealth.TrackerDataObserver
 import java.io.IOException
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -58,7 +76,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import java.lang.IllegalArgumentException // IllegalArgumentException 임포트
 
 /**
  * Wear OS 액티비티:
@@ -264,8 +281,8 @@ class MainActivity : ComponentActivity() {
         healthServiceConnected: Boolean // 헬스 서비스 상태 받기
     ) {
         val blackBackgroundColors = MaterialTheme.colors.copy(
-            background = Color.Black, onBackground = Color.White,
-            surface = Color.Black, onSurface = Color.White,
+            background = Color.Black, onBackground = Color.Black,
+            surface = Color.Black, onSurface = Color.Black,
             primary = Color(0xFFBB86FC), onPrimary = Color.Black
         )
         MaterialTheme (colors = blackBackgroundColors){
@@ -275,6 +292,7 @@ class MainActivity : ComponentActivity() {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .background(color = Color.Black)
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -368,8 +386,6 @@ class MainActivity : ComponentActivity() {
                         Text("Time: --:--:--.---")
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                             Text("G: ---")
-                            Text("IR: ---")
-                            Text("R: ---")
                         }
                         Text("Status: N/A")
                     }
@@ -857,7 +873,7 @@ fun WearAppPreview(
                 } else {
                     Text("Time: --:--:--.---")
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        Text("G: ---"); Text("IR: ---"); Text("R: ---")
+                        Text("G: ---")
                     }
                     Text("Status: N/A")
                 }
