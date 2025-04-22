@@ -82,7 +82,7 @@ def write_to_csv(data_row):
 
 def handle_client(client_sock, client_info):
     print(f"[+] Accepted connection from {client_info}") # 이모티콘 제거
-    buffer = ""  # 누적 버퍼
+    buffer = "" # 누적 버퍼
     try:
         while True:
             try:
